@@ -1,49 +1,64 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"getCurs/internal/config"
+	"getCurs/internal/entity"
+	"getCurs/internal/pkg"
+	"getCurs/internal/repo"
+	"getCurs/internal/repo/postgers"
+	"getCurs/internal/usecase"
 	"log"
-	"os"
-
-	"github.com/go-telegram-bot-api/telegram-bot-api"
+	"time"
 )
 
 func main() {
-	// Получаем токен бота из переменнной окружения
-	token := os.Getenv("TOKEN")
-	if token == "" {
-		panic("TOKEN environment variable is empty")
-	}
-	fmt.Println("Token:", token)
-
-	// Создаем нового бота
-	bot, err := tgbotapi.NewBotAPI(token)
+	cfg, err := config.NewConfig()
 	if err != nil {
-		panic("failed to create new bot: " + err.Error())
+		panic(err)
 	}
-	// Включает режим отладки. Когда Debug установлен в true, библиотека будет выводить в лог все отправляемые и получаемые от Telegram API запросы и ответы
-	bot.Debug = false
-	log.Printf("Authorized on account %s", bot.Self.UserName)
 
-	// Создаем обновления
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates, err := bot.GetUpdatesChan(u)
+	ctx := context.Background()
+
+	pool, err := pkg.NewPostgresClient(ctx, cfg)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to initialize Postgres: %v", err)
+	}
+	defer pkg.ClosePostgres(pool)
+
+	postgresRepo := postgers.NewPostgresRepo(pool)
+
+	receiverRepo := repo.NewReceiverRepo(postgresRepo)
+	updaterRepo := repo.NewUpdaterRepo(postgresRepo)
+
+	receiver := usecase.NewReceiver(receiverRepo)
+	updater := usecase.NewUpdater(updaterRepo)
+
+	// тесты на запрос
+	rates, err := receiver.GetAllRates(ctx)
+	if err != nil {
+		return
+	}
+	fmt.Println(rates)
+
+	// тест на сохзранение
+	ratess := []entity.Rate{
+		{
+			Currency: "a",
+			Value:    10.01,
+			Time:     time.Time{},
+		},
+		{
+			Currency: "b",
+			Value:    20.21,
+			Time:     time.Time{},
+		},
 	}
 
-	// Цикл обработки обновлений
-	for update := range updates {
-		if update.Message == nil {
-			continue
-		}
-
-		// Логируем сообщение
-		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
-
-		// Ответим на сообщение
-		msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Hello, "+update.Message.From.FirstName)
-		bot.Send(msg)
+	err = updater.Update(ctx, ratess)
+	if err != nil {
+		fmt.Printf("Error updating rates: %v\n", err)
 	}
+
 }
